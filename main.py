@@ -14,8 +14,7 @@ TOOLS_DIR = os.path.join(BASE_DIR, "tools")
 TEMP_DIR = os.path.join(BASE_DIR, "temp")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 KEYSTORE_PATH = os.path.join(TOOLS_DIR, "keystore.jks")
-
-JAVA_OPTS = "-Xmx400m" 
+JAVA_OPTS = "-Xmx400m"
 
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -101,7 +100,7 @@ async def generate_apk(
                     icon.file.seek(0)
                     shutil.copyfileobj(icon.file, buffer)
                 saved_icon = True
-                
+        
         if not saved_icon:
              os.makedirs(os.path.join(decoded_path, "res", "drawable"), exist_ok=True)
              with open(os.path.join(decoded_path, "res", "drawable", "ic_launcher.png"), "wb") as buffer:
@@ -135,7 +134,6 @@ async def generate_apk(
     subprocess.run(signer_command, check=True)
     
     target_file = os.path.join(OUTPUT_DIR, final_apk_name)
-    found_apk = None
     
     files = [os.path.join(OUTPUT_DIR, f) for f in os.listdir(OUTPUT_DIR) if f.endswith(".apk")]
     files.sort(key=os.path.getmtime, reverse=True)
@@ -143,7 +141,7 @@ async def generate_apk(
     if files:
         found_apk = files[0]
         os.rename(found_apk, target_file)
-                      else:
+    else:
         shutil.copy(unsigned_apk, target_file)
 
     background_tasks.add_task(clean_up, job_dir)
