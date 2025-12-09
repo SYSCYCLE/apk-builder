@@ -13,6 +13,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TOOLS_DIR = os.path.join(BASE_DIR, "tools")
 TEMP_DIR = os.path.join(BASE_DIR, "temp")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
+KEYSTORE_PATH = os.path.join(TOOLS_DIR, "keystore.jks")
 
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -28,7 +29,10 @@ async def generate_apk(
     app_name: str = Form(...),
     package_name: str = Form(...),
     min_sdk: str = Form("21"),
-    target_sdk: str = Form("33")
+    target_sdk: str = Form("33"),
+    ks_pass: str = Form("fp5rqrbl"),
+    ks_alias: str = Form("key0"),
+    key_pass: str = Form("fp5rqrbl")
 ):
     job_id = str(uuid.uuid4())
     job_dir = os.path.join(TEMP_DIR, job_id)
@@ -45,28 +49,26 @@ async def generate_apk(
     manifest_path = os.path.join(decoded_path, "AndroidManifest.xml")
     tree = ET.parse(manifest_path)
     root = tree.getroot()
-    
-    old_package = root.get("package")
     root.set("package", package_name)
     tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
-
-    yml_path = os.path.join(decoded_path, "apktool.yml")
-    with open(yml_path, "r") as f:
-        yml_content = f.read()
-    
-    with open(yml_path, "w") as f:
-        f.write(yml_content)
 
     strings_path = os.path.join(decoded_path, "res", "values", "strings.xml")
     if os.path.exists(strings_path):
         stree = ET.parse(strings_path)
         sroot = stree.getroot()
+        found = False
         for string in sroot.findall("string"):
             if string.get("name") == "app_name":
                 string.text = app_name
+                found = True
+        if not found:
+            new_elem = ET.SubElement(sroot, "string", name="app_name")
+            new_elem.text = app_name
         stree.write(strings_path, encoding="utf-8", xml_declaration=True)
 
     assets_www = os.path.join(decoded_path, "assets", "www")
+    if not os.path.exists(assets_www):
+        assets_www = os.path.join(decoded_path, "assets")
 
     os.makedirs(assets_www, exist_ok=True)
     
@@ -83,7 +85,10 @@ async def generate_apk(
 
     if icon:
         icon_path = os.path.join(decoded_path, "res", "mipmap-xxxhdpi", "ic_launcher.png")
-        if os.path.exists(icon_path):
+        if not os.path.exists(os.path.dirname(icon_path)):
+             icon_path = os.path.join(decoded_path, "res", "mipmap-hdpi", "ic_launcher.png")
+             
+        if os.path.exists(os.path.dirname(icon_path)):
             with open(icon_path, "wb") as buffer:
                 shutil.copyfileobj(icon.file, buffer)
 
@@ -95,19 +100,35 @@ async def generate_apk(
     ], check=True)
 
     final_apk_name = f"{app_name.replace(' ', '_')}_{job_id}.apk"
-    final_output = os.path.join(OUTPUT_DIR, final_apk_name)
     
-    subprocess.run([
+    signer_command = [
         "java", "-jar", os.path.join(BASE_DIR, "uber-apk-signer.jar"),
         "--apks", unsigned_apk,
         "--out", OUTPUT_DIR,
         "--renameManifestPackage"
-    ], check=True)
+    ]
+
+    if os.path.exists(KEYSTORE_PATH):
+        signer_command.extend([
+            "--ks", KEYSTORE_PATH,
+            "--ksAlias", ks_alias,
+            "--ksPass", ks_pass,
+            "--ksKeyPass", key_pass
+        ])
+
+    subprocess.run(signer_command, check=True)
     
-    generated_file = os.path.join(OUTPUT_DIR, "unsigned-aligned-debugSigned.apk")
     target_file = os.path.join(OUTPUT_DIR, final_apk_name)
-    if os.path.exists(generated_file):
-        os.rename(generated_file, target_file)
+    found_apk = None
+    for f in os.listdir(OUTPUT_DIR):
+        if f.endswith(".apk") and job_id not in f:
+            found_apk = os.path.join(OUTPUT_DIR, f)
+            break
+            
+    if found_apk:
+        os.rename(found_apk, target_file)
+    elif os.path.exists(unsigned_apk):
+         shutil.copy(unsigned_apk, target_file)
 
     background_tasks.add_task(clean_up, job_dir)
 
