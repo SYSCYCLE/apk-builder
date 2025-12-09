@@ -3,4 +3,4 @@ uvicorn
 python-multipart
 lxml
 aiofiles
-shutil
+requests
