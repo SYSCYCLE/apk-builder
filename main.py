@@ -15,11 +15,16 @@ TEMP_DIR = os.path.join(BASE_DIR, "temp")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 KEYSTORE_PATH = os.path.join(TOOLS_DIR, "keystore.jks")
 
+JAVA_OPTS = "-Xmx400m" 
+
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def clean_up(folder_path):
-    shutil.rmtree(folder_path, ignore_errors=True)
+    try:
+        shutil.rmtree(folder_path, ignore_errors=True)
+    except:
+        pass
 
 @app.post("/generate-apk")
 async def generate_apk(
@@ -30,31 +35,34 @@ async def generate_apk(
     package_name: str = Form(...),
     min_sdk: str = Form("21"),
     target_sdk: str = Form("33"),
-    ks_pass: str = Form("fp5rqrbl"),
+    ks_pass: str = Form("123456"),
     ks_alias: str = Form("key0"),
-    key_pass: str = Form("fp5rqrbl")
+    key_pass: str = Form("123456")
 ):
     job_id = str(uuid.uuid4())
     job_dir = os.path.join(TEMP_DIR, job_id)
     os.makedirs(job_dir)
     
     decoded_path = os.path.join(job_dir, "decoded")
+    
     subprocess.run([
-        "java", "-jar", os.path.join(BASE_DIR, "apktool.jar"),
-        "d", os.path.join(TOOLS_DIR, "base.apk"),
+        "java", JAVA_OPTS, "-jar", os.path.join(BASE_DIR, "apktool.jar"),
+        "d", "-s", os.path.join(TOOLS_DIR, "base.apk"),
         "-o", decoded_path,
         "-f"
     ], check=True)
 
     manifest_path = os.path.join(decoded_path, "AndroidManifest.xml")
-    tree = ET.parse(manifest_path)
-    root = tree.getroot()
-    root.set("package", package_name)
-    tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
+    if os.path.exists(manifest_path):
+        tree = ET.parse(manifest_path)
+        root = tree.getroot()
+        root.set("package", package_name)
+        tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
 
     strings_path = os.path.join(decoded_path, "res", "values", "strings.xml")
     if os.path.exists(strings_path):
-        stree = ET.parse(strings_path)
+        parser = ET.XMLParser(remove_blank_text=False)
+        stree = ET.parse(strings_path, parser)
         sroot = stree.getroot()
         found = False
         for string in sroot.findall("string"):
@@ -69,9 +77,9 @@ async def generate_apk(
     assets_www = os.path.join(decoded_path, "assets", "www")
     if not os.path.exists(assets_www):
         assets_www = os.path.join(decoded_path, "assets")
+        if not os.path.exists(assets_www):
+            os.makedirs(assets_www)
 
-    os.makedirs(assets_www, exist_ok=True)
-    
     for filename in os.listdir(assets_www):
         file_path = os.path.join(assets_www, filename)
         if os.path.isfile(file_path): os.unlink(file_path)
@@ -84,17 +92,25 @@ async def generate_apk(
     shutil.unpack_archive(zip_path, assets_www)
 
     if icon:
-        icon_path = os.path.join(decoded_path, "res", "mipmap-xxxhdpi", "ic_launcher.png")
-        if not os.path.exists(os.path.dirname(icon_path)):
-             icon_path = os.path.join(decoded_path, "res", "mipmap-hdpi", "ic_launcher.png")
-             
-        if os.path.exists(os.path.dirname(icon_path)):
-            with open(icon_path, "wb") as buffer:
+        icon_dirs = ["mipmap-xxxhdpi", "mipmap-xxhdpi", "mipmap-xhdpi", "mipmap-hdpi", "mipmap-mdpi"]
+        saved_icon = False
+        for d in icon_dirs:
+            icon_path = os.path.join(decoded_path, "res", d, "ic_launcher.png")
+            if os.path.exists(os.path.dirname(icon_path)):
+                with open(icon_path, "wb") as buffer:
+                    icon.file.seek(0)
+                    shutil.copyfileobj(icon.file, buffer)
+                saved_icon = True
+                
+        if not saved_icon:
+             os.makedirs(os.path.join(decoded_path, "res", "drawable"), exist_ok=True)
+             with open(os.path.join(decoded_path, "res", "drawable", "ic_launcher.png"), "wb") as buffer:
+                icon.file.seek(0)
                 shutil.copyfileobj(icon.file, buffer)
 
     unsigned_apk = os.path.join(job_dir, "unsigned.apk")
     subprocess.run([
-        "java", "-jar", os.path.join(BASE_DIR, "apktool.jar"),
+        "java", JAVA_OPTS, "-jar", os.path.join(BASE_DIR, "apktool.jar"),
         "b", decoded_path,
         "-o", unsigned_apk
     ], check=True)
@@ -102,7 +118,7 @@ async def generate_apk(
     final_apk_name = f"{app_name.replace(' ', '_')}_{job_id}.apk"
     
     signer_command = [
-        "java", "-jar", os.path.join(BASE_DIR, "uber-apk-signer.jar"),
+        "java", JAVA_OPTS, "-jar", os.path.join(BASE_DIR, "uber-apk-signer.jar"),
         "--apks", unsigned_apk,
         "--out", OUTPUT_DIR,
         "--renameManifestPackage"
@@ -120,15 +136,15 @@ async def generate_apk(
     
     target_file = os.path.join(OUTPUT_DIR, final_apk_name)
     found_apk = None
-    for f in os.listdir(OUTPUT_DIR):
-        if f.endswith(".apk") and job_id not in f:
-            found_apk = os.path.join(OUTPUT_DIR, f)
-            break
-            
-    if found_apk:
+    
+    files = [os.path.join(OUTPUT_DIR, f) for f in os.listdir(OUTPUT_DIR) if f.endswith(".apk")]
+    files.sort(key=os.path.getmtime, reverse=True)
+    
+    if files:
+        found_apk = files[0]
         os.rename(found_apk, target_file)
-    elif os.path.exists(unsigned_apk):
-         shutil.copy(unsigned_apk, target_file)
+                      else:
+        shutil.copy(unsigned_apk, target_file)
 
     background_tasks.add_task(clean_up, job_dir)
 
